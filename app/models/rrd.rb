@@ -19,7 +19,7 @@ class RRD
        str = string.to_s.gsub(';', '').gsub('`', '')
     elsif type == 'imagetype'
        str = string.to_s.match(/(PNG|SVG|EPS|PDF)/)[0] rescue RuntimeError #[-a|--imgformat PNG|SVG|EPS|PDF]
-    elsif type == 'rpn'
+    elsif type == 'element'
        str = string.to_s.match(/(PRINT|GPRINT|COMMENT|VRULE|HRULE|LINE|AREA|TICK|SHIFT|TEXTALIGN|STACK)/)[0] rescue RuntimeError
     elsif type == 'color'
       # ACK ground, CANVAS, SHADEA left/top border,
@@ -45,26 +45,42 @@ class RRD
   # :rra is a array containing hashes with RRA types and corresponding values
   # :rra_hwpd is a hwpredict values
   def self.create(path,params,rrdpath="rrdtool")
-    
-	puts "Creating RRD graph"
+  	puts "Creating RRD graph"
     puts "Step: " + self.sanitize(params[:step], 'num')
     begin
-      cmd = "#{rrdpath} create #{self.sanitize(path, 'path')} --step #{self.sanitize(params[:step], 'num')} "
+      cmd = "#{rrdpath} create #{self.sanitize(path, 'path')}"
+      cmd << " --start #{self.sanitize(params[:start], 'num')}" if params[:start]
+      cmd << " --step #{self.sanitize(params[:step], 'num')}"
+      cmd << " --no-overwrite" if params[:no_overwrite]
 
       for p in params[:ds]
-        cmd <<  "DS:#{p[:name]}:#{self.sanitize(p[:type], 'ds_type')}:#{self.sanitize(params[:heartbeat], 'num')}:0:U "
+        cmd << " DS:#{p[:name]}:#{self.sanitize(p[:type], 'ds_type')}"
+        if p[:ds_name] == "COMPUTE"
+          cmd << ":#{p[:rpn]}"
+        else
+          cmd << ":#{self.sanitize(p[:heartbeat], 'num')}"
+          cmd << ":#{p[:min] || '0'}"
+          cmd << ":#{p[:max] || 'U'}"
+        end
       end
 
-      xff = self.sanitize(params[:xff], 'num')
       for r in params[:rra]
-        cmd << "RRA:#{r[:type].upcase}:#{xff}:#{self.sanitize(r[:steps], 'num')}:#{self.sanitize(r[:rows], 'num')} "
-      end
-      
-      # hwpredict    RRA:HWPREDICT:1440:0.1:0.0035:288
-      # # RRA:HWPREDICT:rows:alpha:beta:seasonal period[:rra-num]
-      
-      for r in params[:rra_hwpd]
-        cmd << "RRA:#{r[:type].upcase}:#{r[:rows]}:#{r[:alpha]}:#{r[:beta]}:#{r[:period]} "
+        case r[:type]
+          when "AVERAGE","MIN","MAX","LAST"
+            cmd << " RRA:#{r[:type].upcase}:#{r[:xff]}:#{self.sanitize(r[:steps], 'num')}:#{self.sanitize(r[:rows], 'num')}"
+          # hwpredict    RRA:HWPREDICT:1440:0.1:0.0035:288
+          # RRA:HWPREDICT:rows:alpha:beta:seasonal period[:rra-num]
+          when "HWPREDICT","MHWPREDICT"
+            cmd << " RRA:#{r[:type].upcase}:#{r[:rows]}:#{r[:alpha]}:#{r[:beta]}:#{r[:period]}"
+            cmd << ":#{r[:rra_num]}" if r[:rra_num]
+          when "SEASONAL","DEVSEASONAL"
+            cmd << " RRA:#{r[:type].upcase}:#{r[:period]}:#{r[:gamma]}:#{r[:rra_num]}"
+            cmd << ":#{r[:windows]}=#{r[:fraction]}" if r[:window] && r[:fraction]
+          when "DEVPREDICT"
+            cmd << " RRA:#{r[:type].upcase}:#{r[:rows]}:#{r[:rra_num]}"
+          when "FAILURES"
+            cmd << " RRA:#{r[:type].upcase}:#{r[:rows]}:#{r[:threshold]}:#{r[:window]}:#{r[:rra_num]}"
+        end
       end
       
     rescue RuntimeError => e
@@ -85,18 +101,18 @@ class RRD
   # to be passed as the data values to be passed to the db
   # N specifies the current time (NOW)
   def self.update(path, params,rrdpath="rrdtool")
-    
-
     # sanitize the params
     begin
       sanitized = []
       params.collect { |p| sanitized << self.sanitize(p, 'num') }
-      vals = sanitized.join(":")
-      cmd = "#{rrdpath} update #{self.sanitize(path, 'path')} N:#{vals}"
+      vals = sanitized[1..-1].join(":")
+      cmd = "#{rrdpath} update #{self.sanitize(path, 'path')} "
+      cmd << (params[0].blank? ? "N" : params[0])
+      cmd << ":#{vals}"
     rescue RuntimeError => e
       puts "RRD failed to update: #{e}"
     else
-      puts "Running RRD command"
+      puts "Running RRD command #{cmd}"
       system(cmd)
       return cmd
     end
@@ -121,11 +137,14 @@ class RRD
   # :upperlimit
   # :background --background
   def self.graph(path,image_path,params,rrdpath="rrdtool")
-    
-
     begin
       cmd = "#{rrdpath} graph #{self.sanitize(image_path, 'path')} "
-      cmd << "-s #{self.sanitize(params[:ago].tv_sec, 'num')} "
+      unless params[:ago].blank?
+        cmd << "-s #{self.sanitize(params[:ago].tv_sec, 'num')} "
+      else
+        cmd << "-s #{self.sanitize(params[:start].tv_sec, 'num')} "
+        cmd << "-e #{self.sanitize(params[:end].tv_sec, 'num')} "
+      end
       cmd << "-w #{self.sanitize(params[:width], 'num')} -h #{self.sanitize(params[:height], 'num')} "
       cmd << "-a #{self.sanitize(params[:image_type], 'imagetype')} "
       cmd << "-t '#{self.sanitize(params[:title], 'alphanum')}' "
@@ -133,7 +152,7 @@ class RRD
       abet = "abcdefghijklmnaopqrstuvwxyzABCDEFGHIJKLMNAOPQRSTUVWXYZ".split('')
       # do optionals
       params[:base] ? cmd << " --base=#{self.sanitize(params[:base], 'num')} " : ""
-      params[:vlabel] ? cmd << " -v='#{self.sanitize(params[:vlabel], 'alphanum')}' " : ""
+      params[:vlabel] ? cmd << " -v '#{self.sanitize(params[:vlabel], 'alphanum')}' " : ""
       params[:lowerlimit] ? cmd << " --lower-limit=#{self.sanitize(params[:lowerlimit], 'num')} " : ""
       params[:upperlimit] ? cmd << " --upper-limit=#{self.sanitize(params[:upperlimit], 'num')} " : ""
       if params[:color]
@@ -141,14 +160,32 @@ class RRD
           cmd << " --color #{self.sanitize(c[:type], 'color')}##{self.sanitize(c[:color], 'alphanum')} "
          end
       end
+
+      cmd << "--alt-autoscale-max "
+
       # load defs
       i = 0
-      for d in params[:defs]
-        d_key = abet[i]
-        cmd << "DEF:#{d_key}='#{self.sanitize(path, 'path')}':#{self.sanitize(d[:key], 'alphanum')}:"
-        cmd << "#{self.sanitize(d[:type], 'rra_type')} #{self.sanitize(d[:rpn], 'rpn')}:#{d_key}"
-        cmd << "##{self.sanitize(d[:color], 'alphanum')}:'#{self.sanitize(d[:title], 'alphanum')}' "
+      params[:defs].each do |d|
+        d_key = d[:key] || abet[i]
+        cmd << "DEF:#{d_key}='#{self.sanitize(path, 'path')}':"
+        cmd << "#{self.sanitize(d[:ds_name], 'alphanum')}"
+        cmd << ":#{self.sanitize(d[:cf], 'rra_type')} "
         i+=1
+      end
+
+      params[:cdefs].each do |c|
+        cmd << "CDEF:#{c[:new_key]}=#{c[:key]},#{c[:rpn].join(',')} "
+      end unless params[:cdefs].blank? || params[:cdefs].emtpy?
+
+      params[:elements].each do |e|
+        if e[:element] == "COMMENT"
+          cmd << " #{self.sanitize(e[:element], 'element')}:\"#{e[:text]}\""
+        else
+          cmd << " #{self.sanitize(e[:element], 'element')}:#{e[:key]}"
+          cmd << "##{self.sanitize(e[:color], 'alphanum')}" unless e[:color].blank?
+          cmd << ":#{self.sanitize(e[:cf], 'rra_type')}" unless ["AREA","LINE1"].include?(e[:element])
+          cmd << ":\"#{e[:text]}\" "
+        end
       end
     rescue RuntimeError => e
       puts "RRD failed to graph: #{e}"
