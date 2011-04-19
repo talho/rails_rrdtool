@@ -118,6 +118,21 @@ class RRD
     end
   end
 
+  # example usage:
+  # RRD.update('/test/path.rrd', [["123", "456a", 1234], ["124", "789", 8899]])
+  def self.update_batch(path, params_list, rrdpath="rrdtool")
+    begin
+      vals = params_list.collect { |params| params.join(":") }
+      cmd = "#{rrdpath} update #{self.sanitize(path, 'path')} #{vals.join(" ")}"
+    rescue RuntimeError => e
+      puts "RRD failed to batch update: #{e}"
+    else
+      puts "Running RRD command #{cmd}"
+      system(cmd)
+      cmd
+    end
+  end
+
   # variables for DEF's are taken care of programatically
   # required params
   # :ago is when to start from, a Time object ( Time.now )
