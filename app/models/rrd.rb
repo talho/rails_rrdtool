@@ -175,7 +175,7 @@ class RRD
 
       params[:cdefs].each do |c|
         cmd << "CDEF:#{c[:new_key]}=#{c[:key]},#{c[:rpn].join(',')} "
-      end unless params[:cdefs].blank? || params[:cdefs].emtpy?
+      end unless params[:cdefs].blank? || params[:cdefs].empty?
 
       params[:elements].each do |e|
         if e[:element] == "COMMENT"
